@@ -43,7 +43,7 @@ The app loads `.env` from the project root (parent of AppV1).
 
 ## Documentation
 
-- **Technical architecture:** [`../docs/README-AppV1-Multi-Agent-Architecture.md`](../docs/README-AppV1-Multi-Agent-Architecture.md)
+- **Full documentation:** [`../docs/README.md`](../docs/README.md)
 - **Agents (short reference):** [`AGENTS.md`](AGENTS.md)
 - **Doc version:** [`../docs/VERSION.md`](../docs/VERSION.md)
 

@@ -3,15 +3,16 @@
 | Field | Value |
 |-------|--------|
 | **Bundle** | AppV1 Multi-Agent technical documentation |
-| **Version** | **2.1.1** |
-| **Last updated** | 2026-04-12 |
-| **Primary document** | [`README-AppV1-Multi-Agent-Architecture.md`](./README-AppV1-Multi-Agent-Architecture.md) |
+| **Version** | **2.2.0** |
+| **Last updated** | 2026-05-22 |
+| **Primary document** | [`README.md`](./README.md) |
 | **Related** | [`AppV1/AGENTS.md`](../AppV1/AGENTS.md) |
 
 ## Changelog (documentation only)
 
 | Version | Date | Notes |
 |---------|------|--------|
+| 2.2.0 | 2026-05-22 | Merged `docs/README.md` and `README-AppV1-Multi-Agent-Architecture.md` into a single `docs/README.md`. |
 | 2.1.1 | 2026-04-12 | Shortened AppV1 README and architecture doc: less implementation detail, plain-language loading and NYT notes. |
 | 2.1.0 | 2026-04-12 | Architecture + AppV1 README: progressive refresh, Signal Studio preload and two-phase pipeline, NYT in-memory fallback cache, updated Shiny pipeline notes. |
 | 2.0.0 | 2026-04-11 | Merged comprehensive V2 guide into `README-AppV1-Multi-Agent-Architecture.md` (agents, tools, UI, modules); removed standalone `AppV1/README-V2.md`. |
