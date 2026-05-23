@@ -16,3 +16,7 @@ eggs/
 *.egg-info/
 *.egg
 .DS_Store
+
+# Debug session logs (Cursor / agent instrumentation)
+debug-*.log
+.cursor/debug-*.log

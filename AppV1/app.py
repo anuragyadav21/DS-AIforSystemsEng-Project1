@@ -17,6 +17,8 @@ import pandas as pd
 
 from config import NYT_API_KEY, OPENAI_API_KEY, NYT_SECTIONS
 from agents.workflow import SECTION_LABELS, WORKFLOW_SECTIONS, generate_section_briefs, run_multi_agent_workflow
+from agents.output_qc import compare_quick_and_full
+from reporting.qc_pdf_report import generate_qc_report_pdf, qc_report_filename
 from ui.layout import app_header_with_marquee, sidebar_children, empty_state_message, feature_header
 from ui.agent_views import agent_marquee_ui, agent_workflow_ui, section_brief_ui
 from modules.data_fetch import fetch_nyt_articles, filter_by_time
@@ -35,24 +37,6 @@ from research_agent import run_research_brief
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# region agent log
-def _dbglog(hypothesis_id: str, location: str, message: str, data: dict, run_id: str = "initial"):
-    try:
-        payload = {
-            "sessionId": "293bfe",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("debug-293bfe.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, separators=(",", ":"), default=str) + "\n")
-    except Exception:
-        pass
-# endregion
 
 # Startup: validate OPENAI_API_KEY (length only, never log value)
 _openai_key_checked = False
@@ -147,67 +131,12 @@ app_ui = ui.page_fluid(
                     if (window.startFactRotation) window.startFactRotation();
                 }
             }
-            // #region agent log
-            function __emitInsightDebug(hypothesisId, message, extra) {
-                try {
-                    var wrap = document.querySelector('.app-header-insight-wrap');
-                    var marquee = document.getElementById('agent_marquee');
-                    var target = marquee || wrap || document.body;
-                    var cs = window.getComputedStyle(target);
-                    var wrapCs = wrap ? window.getComputedStyle(wrap) : null;
-                    var payload = {
-                        hypothesisId: String(hypothesisId || 'H0'),
-                        message: String(message || ''),
-                        wrapClass: wrap ? wrap.className : '',
-                        wrapAriaBusy: wrap ? wrap.getAttribute('aria-busy') : null,
-                        descendantRecalcCount: wrap ? wrap.querySelectorAll('.recalculating').length : -1,
-                        globalBusyCount: document.querySelectorAll('.recalculating,[aria-busy="true"]').length,
-                        wrapOpacity: wrapCs ? wrapCs.opacity : '',
-                        wrapFilter: wrapCs ? wrapCs.filter : '',
-                        marqueeClass: marquee ? marquee.className : '',
-                        marqueeAriaBusy: marquee ? marquee.getAttribute('aria-busy') : null,
-                        marqueeOpacity: cs ? cs.opacity : '',
-                        marqueeFilter: cs ? cs.filter : '',
-                        ts: Date.now()
-                    };
-                    if (extra && typeof extra === 'object') {
-                        Object.keys(extra).forEach(function(k){ payload[k] = extra[k]; });
-                    }
-                    if (window.Shiny && typeof Shiny.setInputValue === "function") {
-                        Shiny.setInputValue("insight_debug_state", payload, {priority: "event"});
-                    }
-                } catch (e) {}
-            }
-            // #endregion
             // hide_loading fires after first feed publish; shiny:idle is a fallback if the message is missed.
             $(document).on("shiny:idle", function() {
                 stopLoadingOverlay();
-                // #region agent log
-                __emitInsightDebug('H3_idle_state_not_resetting_dim', 'shiny:idle fired');
-                // #endregion
             });
             Shiny.addCustomMessageHandler("hide_loading", stopLoadingOverlay);
             Shiny.addCustomMessageHandler("show_loading", restartLoadingOverlay);
-            // #region agent log
-            document.addEventListener('shown.bs.tab', function(e) {
-                var t = e && e.target ? (e.target.getAttribute('data-value') || e.target.textContent || '') : '';
-                __emitInsightDebug('H4_tab_switch_forces_rerender', 'Tab changed', {tab: String(t).trim()});
-            });
-            (function watchInsightBusyState(){
-                var wrap = document.querySelector('.app-header-insight-wrap');
-                if (!wrap || typeof MutationObserver === 'undefined') return;
-                var obs = new MutationObserver(function() {
-                    __emitInsightDebug('H1_parent_busy_class_persists', 'Insight wrapper mutation');
-                });
-                obs.observe(wrap, {attributes:true, attributeFilter:['class','aria-busy'], subtree:true});
-                __emitInsightDebug('H2_css_selector_mismatch_or_override', 'Insight observer attached');
-                var bodyObs = new MutationObserver(function() {
-                    __emitInsightDebug('H5_ancestor_state_forces_dim', 'Body mutation affecting busy state');
-                });
-                bodyObs.observe(document.body, {attributes:true, attributeFilter:['class','aria-busy'], subtree:false});
-                __emitInsightDebug('H5_ancestor_state_forces_dim', 'Body observer attached');
-            })();
-            // #endregion
             Shiny.addCustomMessageHandler("signal_progress_ping", function(message) {
                 var ts = (message && message.ts) ? message.ts : Date.now();
                 if (window.Shiny && typeof Shiny.setInputValue === "function") {
@@ -248,7 +177,6 @@ app_ui = ui.page_fluid(
         ui.layout_sidebar(
             ui.sidebar(
                 *sidebar_children(),
-                title="Filters",
                 width=350,
                 open="closed",
             ),
@@ -404,10 +332,26 @@ def server(input: Inputs, output: Outputs, session: Session):
         {
             "status": "idle",
             "marquee_text": "Multi-agent insight will appear here after the first refresh.",
+            "marquee_qc": None,
+            "qc_report": None,
+            "compare_quick_full": None,
+            "composite_evidence_score": None,
             "workflow": {},
             "sections": [],
             "progress_pct": 0,
             "progress_label": "Waiting",
+        }
+    )
+    agent_session_qc_metrics = reactive.value(
+        {
+            "full_runs": 0,
+            "full_success": 0,
+            "full_fail": 0,
+            "timeout_count": 0,
+            "fallback_agent1": 0,
+            "fallback_agent2": 0,
+            "fallback_agent3": 0,
+            "last_error": None,
         }
     )
     agent_refresh_token = reactive.value(0)
@@ -419,6 +363,35 @@ def server(input: Inputs, output: Outputs, session: Session):
     _agent_run_seq = [0]
     # Research brief modal (OpenAI tool-calling agent)
     research_brief_state = reactive.value({"phase": "idle", "text": ""})
+
+    def _session_qc_bump_success(workflow: dict) -> None:
+        m = dict(agent_session_qc_metrics.get())
+        prov = (workflow or {}).get("provenance") or {}
+        m["full_runs"] = int(m.get("full_runs", 0)) + 1
+        m["full_success"] = int(m.get("full_success", 0)) + 1
+        for agent_key, ctr_key in (
+            ("agent1", "fallback_agent1"),
+            ("agent2", "fallback_agent2"),
+            ("agent3", "fallback_agent3"),
+        ):
+            if prov.get(agent_key) == "fallback":
+                m[ctr_key] = int(m.get(ctr_key, 0)) + 1
+        m["last_error"] = None
+        agent_session_qc_metrics.set(m)
+
+    def _session_qc_bump_timeout() -> None:
+        m = dict(agent_session_qc_metrics.get())
+        m["full_runs"] = int(m.get("full_runs", 0)) + 1
+        m["timeout_count"] = int(m.get("timeout_count", 0)) + 1
+        agent_session_qc_metrics.set(m)
+
+    def _session_qc_bump_fail(exc: BaseException | None) -> None:
+        m = dict(agent_session_qc_metrics.get())
+        m["full_runs"] = int(m.get("full_runs", 0)) + 1
+        m["full_fail"] = int(m.get("full_fail", 0)) + 1
+        if exc is not None:
+            m["last_error"] = str(exc)[:500]
+        agent_session_qc_metrics.set(m)
 
     async def _send_signal_progress(pct: int, label: str, status: str = ""):
         out = session.send_custom_message(
@@ -432,37 +405,6 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.event(input.signal_progress_client_ack)
     def _signal_progress_client_ack_logger():
         _ = input.signal_progress_client_ack()
-
-    # region agent log
-    @reactive.effect
-    @reactive.event(input.insight_debug_state)
-    def _insight_debug_state_logger():
-        payload = input.insight_debug_state()
-        if not isinstance(payload, dict):
-            return
-        hypothesis_id = str(payload.get("hypothesisId", "H0"))
-        message = str(payload.get("message", "Insight debug"))
-        _dbglog(
-            hypothesis_id,
-            "app.py:_insight_debug_state_logger",
-            message,
-            {
-                "tab": payload.get("tab"),
-                "wrapClass": payload.get("wrapClass"),
-                "wrapAriaBusy": payload.get("wrapAriaBusy"),
-                "wrapOpacity": payload.get("wrapOpacity"),
-                "wrapFilter": payload.get("wrapFilter"),
-                "marqueeClass": payload.get("marqueeClass"),
-                "marqueeAriaBusy": payload.get("marqueeAriaBusy"),
-                "marqueeOpacity": payload.get("marqueeOpacity"),
-                "marqueeFilter": payload.get("marqueeFilter"),
-                "descendantRecalcCount": payload.get("descendantRecalcCount"),
-                "globalBusyCount": payload.get("globalBusyCount"),
-                "clientTs": payload.get("ts"),
-                "activeTab": input.category_tabs(),
-            },
-        )
-    # endregion
 
     async def _send_loading(show: bool):
         """Call send_custom_message; await if it returns a coroutine (Shiny async)."""
@@ -826,8 +768,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         try:
             enriched = await asyncio.to_thread(_scoped_enrich_articles, arts, hours)
             enriched_articles_state.set(enriched)
-            if agent_pipeline_armed.get():
-                agent_refresh_token.set(agent_refresh_token.get() + 1)
+            # Do not re-run the agent pipeline here: it already started after phase-1 fetch.
+            # A second run cleared workflow → long "Analyzing" header + redundant LLM work.
+            # User can change time/tone or open Signal Studio to refresh signals.
             last_refresh.set(datetime.now())
             logger.info("Enriched and stored %s articles (background AI complete)", len(enriched))
         except Exception as ex:
@@ -1003,6 +946,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 {
                     "status": "idle",
                     "marquee_text": "Multi-agent insight will appear here after the first refresh.",
+                    "marquee_qc": None,
+                    "qc_report": None,
+                    "compare_quick_full": None,
+                    "composite_evidence_score": None,
                     "workflow": {},
                     "sections": [],
                     "progress_pct": 0,
@@ -1010,12 +957,26 @@ def server(input: Inputs, output: Outputs, session: Session):
                 }
             )
             return
+        prev_state = dict(agent_workflow_state.get() or {})
+        prev_wf = prev_state.get("workflow") if isinstance(prev_state.get("workflow"), dict) else {}
+        keep_marquee = (
+            prev_state.get("status") == "ready"
+            and bool(prev_wf)
+            and bool(prev_wf.get("agent2") or prev_wf.get("marquee_text"))
+        )
         agent_workflow_state.set(
             {
                 "status": "loading",
-                "marquee_text": "Agent 1 is linking sections, Agent 2 is rating world mood, and Agent 3 is checking the tape.",
-                "workflow": {},
-                "sections": [],
+                "marquee_text": str(
+                    prev_state.get("marquee_text")
+                    or "Refreshing Global Insight from the latest feed…"
+                ),
+                "marquee_qc": prev_state.get("marquee_qc") if keep_marquee else None,
+                "qc_report": prev_state.get("qc_report") if keep_marquee else None,
+                "compare_quick_full": prev_state.get("compare_quick_full") if keep_marquee else None,
+                "composite_evidence_score": prev_state.get("composite_evidence_score") if keep_marquee else None,
+                "workflow": prev_wf if keep_marquee else {},
+                "sections": list(prev_state.get("sections") or []) if keep_marquee else [],
                 "progress_pct": 20,
                 "progress_label": "Building quick snapshot",
             }
@@ -1035,11 +996,17 @@ def server(input: Inputs, output: Outputs, session: Session):
                 if run_id != _agent_run_seq[0]:
                     return
                 section_brief_state.set(dict(cached_state.get("briefs", {})))
+                wf_cached = dict(cached_state.get("workflow", {}))
                 agent_workflow_state.set(
                     {
                         "status": str(cached_state.get("status", "ready")),
                         "marquee_text": str(cached_state.get("marquee_text", "")),
-                        "workflow": dict(cached_state.get("workflow", {})),
+                        "marquee_qc": cached_state.get("marquee_qc") or wf_cached.get("marquee_qc"),
+                        "qc_report": cached_state.get("qc_report") or wf_cached.get("qc_report"),
+                        "compare_quick_full": cached_state.get("compare_quick_full"),
+                        "composite_evidence_score": cached_state.get("composite_evidence_score")
+                        or wf_cached.get("composite_evidence_score"),
+                        "workflow": wf_cached,
                         "sections": list(cached_state.get("sections", [])),
                         "progress_pct": int(cached_state.get("progress_pct", 100)),
                         "progress_label": str(cached_state.get("progress_label", "Done")),
@@ -1054,6 +1021,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 {
                     "status": "ready",
                     "marquee_text": str(quick_workflow.get("marquee_text", "Signal Studio quick view loaded.")),
+                    "marquee_qc": None,
+                    "qc_report": None,
+                    "compare_quick_full": None,
+                    "composite_evidence_score": None,
                     "workflow": quick_workflow,
                     "sections": packets,
                     "progress_pct": 60,
@@ -1067,6 +1038,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                     "run_id": run_id,
                     "pipeline_key": pipeline_key,
                     "packets": packets,
+                    "quick_workflow": quick_workflow,
                 }
             )
         except Exception as exc:
@@ -1077,6 +1049,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 {
                     "status": "error",
                     "marquee_text": "Multi-agent workflow hit a fallback path. Refresh again after checking API and network access.",
+                    "marquee_qc": None,
+                    "qc_report": None,
+                    "compare_quick_full": None,
+                    "composite_evidence_score": None,
                     "workflow": {},
                     "sections": [],
                     "progress_pct": 0,
@@ -1124,10 +1100,19 @@ def server(input: Inputs, output: Outputs, session: Session):
                 if local_run_id != _agent_run_seq[0]:
                     return
                 section_brief_state.set(briefs)
+                quick_wf = local_info.get("quick_workflow") or {}
+                compare_qf = compare_quick_and_full(quick_wf if isinstance(quick_wf, dict) else {}, workflow)
+                comp_score = workflow.get("composite_evidence_score")
+                qc_rep = workflow.get("qc_report")
+                mq = workflow.get("marquee_qc")
                 agent_workflow_state.set(
                     {
                         "status": "ready",
                         "marquee_text": str(workflow.get("marquee_text", "")),
+                        "marquee_qc": mq,
+                        "qc_report": qc_rep,
+                        "compare_quick_full": compare_qf,
+                        "composite_evidence_score": comp_score,
                         "workflow": workflow,
                         "sections": packets_with_briefs,
                         "progress_pct": 100,
@@ -1139,15 +1124,23 @@ def server(input: Inputs, output: Outputs, session: Session):
                 agent_pipeline_cache[local_pipeline_key] = {
                     "status": "ready",
                     "marquee_text": str(workflow.get("marquee_text", "")),
+                    "marquee_qc": mq,
+                    "qc_report": qc_rep,
+                    "compare_quick_full": compare_qf,
+                    "composite_evidence_score": comp_score,
                     "workflow": workflow,
                     "sections": packets_with_briefs,
                     "briefs": briefs,
                     "progress_pct": 100,
                     "progress_label": "Done",
                 }
+                _session_qc_bump_success(workflow)
                 logger.info("Agent pipeline complete (run_id=%s)", local_run_id)
             except Exception as exc:
                 logger.exception("Full agent pipeline failed: %s", exc)
+                if local_run_id != _agent_run_seq[0]:
+                    return
+                _session_qc_bump_fail(exc)
 
         asyncio.create_task(_worker(dict(info)))
 
@@ -1430,6 +1423,14 @@ def server(input: Inputs, output: Outputs, session: Session):
     def agent_marquee():
         return agent_marquee_ui(agent_workflow_state.get())
 
+    @render.download(filename=lambda: qc_report_filename())
+    def qc_report_pdf():
+        pdf_bytes = generate_qc_report_pdf(
+            dict(agent_workflow_state.get() or {}),
+            last_refresh=last_refresh.get(),
+        )
+        yield pdf_bytes
+
     @render.ui
     def section_brief_all():
         return _section_brief_output("ALL")
@@ -1461,7 +1462,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             _ = input.signal_progress_ping()
         except Exception:
             pass
-        state = agent_workflow_state.get()
+        state = dict(agent_workflow_state.get() or {})
+        state["session_qc_metrics"] = dict(agent_session_qc_metrics.get() or {})
         status = str((state or {}).get("status", ""))
         return agent_workflow_ui(state, input.agent_view_mode())
 

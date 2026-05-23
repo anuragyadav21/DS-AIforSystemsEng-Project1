@@ -12,6 +12,8 @@ Design principle: **show useful content quickly**, then **upgrade intelligence p
 
 External dependencies: **NYT API**, **OpenAI API**, **yfinance** (Yahoo Finance).
 
+**Signal Studio QC:** Category-level QC scores, composite evidence metrics, marquee quality badges, and a downloadable QC PDF report. Details: [`AppV1/documentation/qc_logic_readme.md`](../AppV1/documentation/qc_logic_readme.md).
+
 ---
 
 ## Table of contents
@@ -596,6 +598,7 @@ stateDiagram-v2
 - **Category signals:** Brief dots for business, arts, world, politics.
 - **Final insight:** Agent 3 `final_insight` (fallback Agent 2 `description`).
 - **Analytical / Deep Dive:** Agent 2 `reasoning`, Agent 3 `truth_checks`.
+- **QC panel:** Schema validation, category-level scores, composite evidence, **Download QC report** (PDF via `reporting/qc_pdf_report.py`).
 
 ### Component → source
 
@@ -660,6 +663,10 @@ flowchart TB
 | `AppV1/agents/world_sentiment_agent.py` | Agent 2 |
 | `AppV1/agents/market_validation_agent.py` | Agent 3 + `GET_MARKET_SNAPSHOT_TOOL` |
 | `AppV1/agents/market_data.py` | `fetch_market_snapshot`, `MARKET_TICKERS` |
+| `AppV1/agents/output_qc.py` | Schema QC, composite evidence score |
+| `AppV1/modules/marquee_qc.py` | Marquee text quality scoring |
+| `AppV1/modules/marquee_surface.py` | Marquee QC badge UI helpers |
+| `AppV1/reporting/qc_pdf_report.py` | Downloadable QC PDF report |
 | `AppV1/modules/data_fetch.py` | NYT API |
 | `AppV1/modules/categorization.py` | Breaking, trending, latest |
 | `AppV1/modules/ai_services.py` | Sentiment + summaries |
@@ -730,6 +737,7 @@ Render in [Mermaid Live Editor](https://mermaid.live).
 | [`BACKEND_RUNTIME_FLOW.md`](./BACKEND_RUNTIME_FLOW.md) | Exact backend execution order |
 | [`VERSION.md`](./VERSION.md) | Documentation bundle version |
 | [`AppV1/documentation/`](../AppV1/documentation/) | Usage, app description, process notes |
+| [`AppV1/documentation/qc_logic_readme.md`](../AppV1/documentation/qc_logic_readme.md) | Signal Studio QC scoring and PDF report |
 
 ---
 
@@ -737,7 +745,7 @@ Render in [Mermaid Live Editor](https://mermaid.live).
 
 | Doc version | Date | Changes |
 |-------------|------|---------|
-| 2.2.0 | 2026-05-22 | **Merged** `docs/README.md` and `README-AppV1-Multi-Agent-Architecture.md` into this single document. |
+| 2.2.0 | 2026-05-22 | **Merged** `docs/README.md` and `README-AppV1-Multi-Agent-Architecture.md`; integrated Signal Studio QC documentation. |
 | 2.1.1 | 2026-04-12 | Simplified reactive pipeline and operational notes. |
 | 2.1.0 | 2026-04-12 | Progressive refresh, two-phase agent pipeline, NYT fallback cache. |
 | 2.0.0 | 2026-04-11 | Merged former `AppV1/README-V2.md` into architecture doc. |
