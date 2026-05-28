@@ -43,6 +43,8 @@ The app opens in your default browser automatically.
 
 The app loads `.env` from the project root (parent of AppV1).
 
+**Render + Upstash Redis caching:** See [`REDIS_CACHE_SETUP.md`](REDIS_CACHE_SETUP.md) for lazy-loaded 24h AI caching and environment variables.
+
 ## Documentation
 
 - **Full documentation:** [`../docs/README.md`](../docs/README.md)

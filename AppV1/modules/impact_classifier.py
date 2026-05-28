@@ -10,6 +10,7 @@ import httpx
 import pandas as pd
 
 from config import OPENAI_MODEL
+from cache.helpers import cache_get_sync, cache_set_sync, make_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,20 @@ def get_impact_batch(
 
     numbered = "\n\n---\n\n".join(f"{i+1}.\n{t}" for i, t in enumerate(lines))
     prompt = f"{IMPACT_PROMPT}\n\n{numbered}"
-
     n_items = len(items)
+    cache_key = make_cache_key(
+        "impact_batch",
+        {"model": OPENAI_MODEL, "items": [(u, t, s, a) for u, t, s, a in items]},
+    )
+    cached = cache_get_sync(cache_key)
+    if cached is not None and isinstance(cached, list) and len(cached) == n_items:
+        labels = [str(x) for x in cached]
+        now = datetime.now(timezone.utc)
+        for (url, _, _, _), label in zip(items, labels):
+            if url:
+                impact_cache[url] = {"label": label, "timestamp": now}
+        return labels
+
     try:
         _client = client or httpx.Client(timeout=30.0)
         try:
@@ -161,6 +174,7 @@ def get_impact_batch(
         for i, (url, _, _, _) in enumerate(items):
             if url:
                 impact_cache[url] = {"label": labels[i] if i < len(labels) else "neutral", "timestamp": now}
+        cache_set_sync(cache_key, labels)
         return labels
     except Exception as e:
         logger.exception("Impact classifier batch failed: %s", e)

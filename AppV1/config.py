@@ -59,6 +59,11 @@ else:
 NYT_API_KEY = os.getenv("NYT_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Upstash Redis (REST) — optional; enables 24h lazy-loaded AI response caching on Render.
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+REDIS_CACHE_TTL_SECONDS = int(os.getenv("REDIS_CACHE_TTL_SECONDS", str(24 * 3600)))
+
 # Single Chat Completions model for sentiment, summaries, impact, and research agent.
 OPENAI_MODEL = "gpt-4o-mini-2024-07-18"
 

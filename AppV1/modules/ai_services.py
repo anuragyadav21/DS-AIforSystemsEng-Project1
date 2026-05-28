@@ -7,6 +7,7 @@ from typing import Optional
 import httpx
 
 from config import OPENAI_MODEL
+from cache.helpers import cache_get_sync, cache_set_sync, make_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ def get_sentiments_batch(
     if not numbered.strip():
         return ["neutral"] * len(titles)
     prompt = f'Classify each headline as exactly one word: positive, negative, or neutral. Reply with only those words, one per line, in the same order as the headlines.\n\n{numbered}'
+    cache_key = make_cache_key("sentiment_batch", {"model": OPENAI_MODEL, "titles": titles})
+    cached = cache_get_sync(cache_key)
+    if cached is not None and isinstance(cached, list) and len(cached) == len(titles):
+        return [str(x) for x in cached]
     try:
         _client = client or httpx.Client(timeout=30.0)
         try:
@@ -72,7 +77,9 @@ def get_sentiments_batch(
             return ["neutral"] * len(titles)
         out = resp.json()
         text = out["choices"][0]["message"]["content"]
-        return _parse_sentiment_response(text, len(titles))
+        parsed = _parse_sentiment_response(text, len(titles))
+        cache_set_sync(cache_key, parsed)
+        return parsed
     except Exception as e:
         logger.exception("OpenAI sentiment batch failed: %s", e)
         return ["neutral"] * len(titles)
@@ -157,6 +164,13 @@ def get_summary(
     }
     tone_instruction = tone_instructions.get(tone, tone_instructions["Informational"])
     prompt = f"{tone_instruction}\n\nText: {text}"
+    cache_key = make_cache_key(
+        "summary",
+        {"model": OPENAI_MODEL, "title": title, "abstract": abstract, "subtitle": subtitle, "tone": tone},
+    )
+    cached = cache_get_sync(cache_key)
+    if cached is not None:
+        return str(cached)
     try:
         if client is not None:
             resp = client.post(
@@ -191,7 +205,10 @@ def get_summary(
             logger.warning("OpenAI summary returned status %s", resp.status_code)
             return abstract if abstract else title
         out = resp.json()
-        return out["choices"][0]["message"]["content"].strip()
+        summary = out["choices"][0]["message"]["content"].strip()
+        if summary:
+            cache_set_sync(cache_key, summary)
+        return summary
     except Exception as e:
         logger.exception("OpenAI summary failed: %s", e)
         return abstract if abstract else title

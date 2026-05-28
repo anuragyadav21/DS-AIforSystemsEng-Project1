@@ -6,3 +6,4 @@ pandas
 uvicorn[standard]
 yfinance
 reportlab>=4.0.0
+upstash-redis>=1.1.0

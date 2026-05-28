@@ -16,6 +16,7 @@ import json
 import pandas as pd
 
 from config import NYT_API_KEY, OPENAI_API_KEY, NYT_SECTIONS
+from cache.helpers import cache_get_async, cache_get_sync, cache_set_async, cache_set_sync, make_cache_key
 from agents.workflow import SECTION_LABELS, WORKFLOW_SECTIONS, generate_section_briefs, run_multi_agent_workflow
 from agents.output_qc import compare_quick_and_full
 from reporting.qc_pdf_report import generate_qc_report_pdf, qc_report_filename
@@ -442,6 +443,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         def _do_sentiment():
             to_fetch = [u for u in scoped_urls if u not in sentiment_cache]
+            for u in list(to_fetch):
+                cached_sent = cache_get_sync(_sentiment_redis_key(u))
+                if cached_sent is not None:
+                    sentiment_cache[u] = str(cached_sent)
+                    to_fetch.remove(u)
             if to_fetch and api_key and str(api_key).strip() and "title" in arts.columns:
                 titles = []
                 for u in to_fetch:
@@ -450,6 +456,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 results = get_sentiments_parallel(titles, api_key)
                 for u, s in zip(to_fetch, results):
                     sentiment_cache[u] = s
+                    cache_set_sync(_sentiment_redis_key(u), s)
 
         def _do_impact():
             sub = arts.loc[arts["url"].astype(str).isin(url_set)].reset_index(drop=True)
@@ -500,6 +507,15 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _cache_key(payload) -> str:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _pipeline_redis_key(pipeline_key: str) -> str:
+        return make_cache_key("agent_pipeline", {"pipeline_key": pipeline_key})
+
+    def _summary_redis_key(url: str, tone: str) -> str:
+        return make_cache_key("card_summary", {"url": url, "tone": tone})
+
+    def _sentiment_redis_key(url: str) -> str:
+        return make_cache_key("article_sentiment", {"url": url})
 
     def _fallback_brief_from_packet(packet: dict) -> str:
         label = str(packet.get("label", "Section"))
@@ -591,6 +607,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             if url is not None and key in summary_cache:
                 summaries[idx] = str(summary_cache[key])
                 continue
+            if url is not None:
+                cached_summary = cache_get_sync(_summary_redis_key(str(url), tone))
+                if cached_summary is not None:
+                    summary_cache[key] = str(cached_summary)
+                    summaries[idx] = str(cached_summary)
+                    continue
             title = row.get("title", "")
             abstract = row.get("abstract", "")
             sub = row.get("subtitle")
@@ -605,6 +627,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 summaries[idx] = str(summary)
                 if url is not None:
                     summary_cache[f"{url}|{tone}"] = str(summary)
+                    cache_set_sync(_summary_redis_key(str(url), tone), str(summary))
         for idx, summary in enumerate(summaries):
             if summary:
                 continue
@@ -992,6 +1015,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 }
             )
             cached_state = agent_pipeline_cache.get(pipeline_key)
+            if cached_state is None:
+                cached_state = await cache_get_async(_pipeline_redis_key(pipeline_key))
+                if cached_state is not None:
+                    agent_pipeline_cache[pipeline_key] = cached_state
             if cached_state is not None:
                 if run_id != _agent_run_seq[0]:
                     return
@@ -1134,6 +1161,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                     "progress_pct": 100,
                     "progress_label": "Done",
                 }
+                await cache_set_async(
+                    _pipeline_redis_key(local_pipeline_key),
+                    agent_pipeline_cache[local_pipeline_key],
+                )
                 _session_qc_bump_success(workflow)
                 logger.info("Agent pipeline complete (run_id=%s)", local_run_id)
             except Exception as exc:

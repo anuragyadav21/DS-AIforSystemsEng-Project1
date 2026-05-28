@@ -6,6 +6,7 @@ from typing import Any, Optional
 import httpx
 
 from config import OPENAI_MODEL
+from cache.helpers import cache_get_sync, cache_set_sync, make_cache_key
 
 logger = logging.getLogger(__name__)
 _shared_client: httpx.Client | None = None
@@ -48,6 +49,19 @@ def call_text_llm(
 ) -> str | None:
     if not api_key or not str(api_key).strip():
         return None
+    cache_key = make_cache_key(
+        "llm_text",
+        {
+            "model": OPENAI_MODEL,
+            "system": system_prompt,
+            "user": user_prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+    )
+    cached = cache_get_sync(cache_key)
+    if cached is not None:
+        return str(cached)
     try:
         resp = _client().post(
             "https://api.openai.com/v1/chat/completions",
@@ -69,7 +83,10 @@ def call_text_llm(
             logger.warning("LLM text call returned status %s", resp.status_code)
             return None
         payload = resp.json()
-        return payload["choices"][0]["message"]["content"].strip()
+        text = payload["choices"][0]["message"]["content"].strip()
+        if text:
+            cache_set_sync(cache_key, text)
+        return text
     except Exception as exc:
         logger.warning("LLM text call failed: %s", exc)
         return None
@@ -85,6 +102,19 @@ def call_json_llm(
 ) -> dict[str, Any] | None:
     if not api_key or not str(api_key).strip():
         return None
+    cache_key = make_cache_key(
+        "llm_json",
+        {
+            "model": OPENAI_MODEL,
+            "system": system_prompt,
+            "user": user_prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+    )
+    cached = cache_get_sync(cache_key)
+    if cached is not None and isinstance(cached, dict):
+        return cached
     try:
         resp = _client().post(
             "https://api.openai.com/v1/chat/completions",
@@ -108,7 +138,10 @@ def call_json_llm(
             return None
         payload = resp.json()
         content = payload["choices"][0]["message"]["content"]
-        return _extract_json_object(content)
+        parsed = _extract_json_object(content)
+        if isinstance(parsed, dict) and parsed:
+            cache_set_sync(cache_key, parsed)
+        return parsed
     except Exception as exc:
         logger.warning("LLM JSON call failed: %s", exc)
         return None
@@ -137,6 +170,21 @@ def run_tool_round_then_json(
     """
     if not api_key or not str(api_key).strip():
         return None
+    cache_key = make_cache_key(
+        "llm_tool_json",
+        {
+            "model": OPENAI_MODEL,
+            "system": system_prompt,
+            "user": first_user_content,
+            "tools": tools,
+            "max_tokens_first": max_tokens_first,
+            "max_tokens_second": max_tokens_second,
+            "temperature": temperature,
+        },
+    )
+    cached = cache_get_sync(cache_key)
+    if cached is not None and isinstance(cached, dict):
+        return cached
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": first_user_content},
@@ -167,6 +215,8 @@ def run_tool_round_then_json(
         if not tool_calls:
             content = (msg.get("content") or "").strip()
             parsed = _extract_json_object(content)
+            if isinstance(parsed, dict) and parsed:
+                cache_set_sync(cache_key, parsed)
             return parsed if isinstance(parsed, dict) and parsed else None
 
         assistant_msg: dict[str, Any] = {
@@ -215,6 +265,8 @@ def run_tool_round_then_json(
         payload2 = resp2.json()
         content2 = payload2["choices"][0]["message"].get("content") or ""
         out = _extract_json_object(content2)
+        if isinstance(out, dict) and out:
+            cache_set_sync(cache_key, out)
         return out if isinstance(out, dict) and out else None
     except Exception as exc:
         logger.warning("LLM tool round failed: %s", exc)
