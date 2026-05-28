@@ -12,6 +12,8 @@ from datetime import datetime
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from shiny import App, Inputs, Outputs, Session, reactive, render, run_app, ui
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 import json
 import pandas as pd
 
@@ -1718,6 +1720,33 @@ def server(input: Inputs, output: Outputs, session: Session):
 
 
 app = App(app_ui, server, static_assets=Path(__file__).parent / "www")
+
+
+async def _health_get(_request):
+    """Lightweight wake/ping for portfolio speculative warm-up (no NYT/LLM work)."""
+    return JSONResponse(
+        {"status": "ok"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+        },
+    )
+
+
+async def _health_options(_request):
+    return JSONResponse(
+        {"status": "ok"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
+
+
+# Register before catch-all Shiny routes so GET /health returns immediately.
+app.starlette_app.routes.insert(0, Route("/health", _health_options, methods=["OPTIONS"]))
+app.starlette_app.routes.insert(0, Route("/health", _health_get, methods=["GET"]))
 
 if __name__ == "__main__":
     import threading
